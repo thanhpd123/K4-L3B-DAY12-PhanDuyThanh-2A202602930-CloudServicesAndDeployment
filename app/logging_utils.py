@@ -34,4 +34,14 @@ def log_event(event: str, level: str = "info", **fields) -> str:
         >>> log_event("ask_completed", user_id="sv01", cost_usd=0.0001)
         '{"event": "ask_completed", "level": "info", "timestamp": "...", ...}'
     """
-    raise NotImplementedError("TODO (CP1): cài đặt log_event")
+    record: dict = {
+        "event": event,
+        "level": level.lower(),
+        "timestamp": utc_now_iso(),
+    }
+    record.update(fields)
+
+    # ensure_ascii=False để tiếng Việt đọc được; KHÔNG indent để giữ 1 dòng.
+    line = json.dumps(record, ensure_ascii=False)
+    print(line, file=sys.stdout)
+    return line

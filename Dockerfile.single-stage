@@ -1,0 +1,22 @@
+# ═══════════════════════════════════════════════════════════════════
+# Bản Dockerfile MỘT STAGE — bản gốc của lab, giữ lại làm đối chứng.
+#
+# File này KHÔNG dùng để deploy. Mục đích duy nhất: đo dung lượng image
+# một-stage rồi so với bản multi-stage trong `Dockerfile`, để trả lời
+# Câu 3 của `exercises.md`.
+#
+#     docker build -f Dockerfile.single-stage -t day12-agent:single .
+#     docker images | Select-String day12-agent
+# ═══════════════════════════════════════════════════════════════════
+
+FROM python:3.11
+
+WORKDIR /app
+
+COPY . .
+
+RUN pip install -r requirements.txt
+
+EXPOSE 8000
+
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

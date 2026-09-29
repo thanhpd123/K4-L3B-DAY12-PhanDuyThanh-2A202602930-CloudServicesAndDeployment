@@ -51,7 +51,12 @@ class ConversationStore:
         Trả ``True`` nếu thành công, ``False`` nếu có bất kỳ Exception nào
         (mất mạng, sai mật khẩu, Redis chưa khởi động...).
         """
-        raise NotImplementedError("TODO (CP4): cài đặt ping")
+        # Nuốt mọi exception: hàm này dùng cho /ready, để exception thoát ra
+        # là readiness probe biến thành lỗi 500.
+        try:
+            return bool(self.client.ping())
+        except Exception:
+            return False
 
     def append(self, user_id: str, role: str, content: str) -> None:
         """Ghi thêm một lượt vào lịch sử.
@@ -65,7 +70,14 @@ class ConversationStore:
           3. ``self.client.expire(key, HISTORY_TTL_SECONDS)`` — hội thoại cũ
              tự hết hạn, khỏi phải dọn tay.
         """
-        raise NotImplementedError("TODO (CP4): cài đặt append")
+        key = self._key(user_id)
+        self.client.rpush(
+            key, json.dumps({"role": role, "content": content}, ensure_ascii=False)
+        )
+        # Giữ N message MỚI NHẤT (-N, -1). Dùng (0, N-1) là giữ nhầm phần cũ
+        # nhất — prompt dài vô hạn = tiền token vô hạn.
+        self.client.ltrim(key, -HISTORY_MAX_MESSAGES, -1)
+        self.client.expire(key, HISTORY_TTL_SECONDS)
 
     def get_history(self, user_id: str) -> list[dict]:
         """Đọc lịch sử hội thoại, cũ nhất trước.
@@ -73,7 +85,7 @@ class ConversationStore:
         TODO (CP4): ``self.client.lrange(key, 0, -1)`` rồi ``json.loads``
         từng phần tử. Chưa có gì → trả về list rỗng.
         """
-        raise NotImplementedError("TODO (CP4): cài đặt get_history")
+        return [json.loads(item) for item in self.client.lrange(self._key(user_id), 0, -1)]
 
     def clear(self, user_id: str) -> None:
         """CHO SẴN — xóa lịch sử của một user."""
