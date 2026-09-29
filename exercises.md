@@ -382,42 +382,53 @@ Ghi lại **một** lỗi bạn gặp khi deploy lên cloud (build fail, health 
 timeout, sai REDIS_URL, app không đọc `$PORT`...): thông báo lỗi là gì, bạn
 tìm ra nguyên nhân bằng cách nào, và sửa ra sao?
 
-> **Trạng thái: phần deploy lên cloud chưa hoàn tất tại thời điểm viết báo cáo**
-> — đây là bước duy nhất còn lại, và em ghi lại đúng những gì đã gặp thay vì
-> viết một lỗi mà em chưa trải qua.
+> **Lỗi: deploy xong, service báo Online, nhưng thực ra chưa dùng được.**
 >
-> Lỗi em thực sự gặp trong lúc chuẩn bị deploy là một lỗi kết nối mạng:
+> Ngay sau `railway up`, card service trên Railway báo **Online** nên em tưởng
+> đã xong. Nhưng khi gọi thử thì:
 >
 > ```
-> failed to fetch oauth token: Post "https://auth.docker.io/token":
-> dial tcp: lookup auth.docker.io: no such host
+> GET  /health  → 200  {"status":"ok",...}          ← qua
+> GET  /ready   → 503  {"status":"not ready","redis":false}
+> POST /ask     → 401 (không key)  /  500 (có key)
 > ```
 >
-> Thông báo này xuất hiện khi em build bản image một-stage (kéo base
-> `python:3.11` về). Ban đầu em nghi Dockerfile viết sai — nhưng image
-> multi-stage vẫn build thành công ngay trước đó, và bản multi-stage cũng dùng
-> base image từ Docker Hub. Hai lần build dùng cùng một Dockerfile cơ chế,
-> khác nhau chỉ ở base image, nên nghi vấn đầu tiên là "file cấu hình".
+> **Cách tìm ra nguyên nhân.** Em đọc hai tín hiệu rời nhau thay vì đoán:
 >
-> Cách tìm ra nguyên nhân: em tách việc build ra khỏi Dockerfile bằng một lệnh
-> độc lập:
+> - `/ask` **không có key trả 401 chứ không phải 500**. Điều này chứng tỏ
+>   `AGENT_API_KEY` đã set đúng — vì lớp xác thực phải chạy được thì mới trả
+>   được 401. Vậy lỗi không nằm ở khâu cấu hình chung.
+> - `/ready` nói rõ `"redis": false`, tức `store.ping()` thất bại.
 >
-> ```powershell
-> docker pull python:3.11
-> curl.exe -s -o NUL -w "%{http_code}" https://auth.docker.io/token   # → 200
+> Ghép lại: app không nối được Redis. Em mở tab Variables của service agent và
+> thấy đúng chỗ thiếu — biến `REDIS_URL` chưa nằm ở đó.
+>
+> **Nguyên nhân.** Không có `REDIS_URL`, `Settings` rơi về giá trị mặc định
+> `redis://localhost:6379/0`. Trong container, `localhost` là **chính container
+> đó**, không phải service Redis. Đây đúng là cái bẫy mà `docker-compose.yml` đã
+> cảnh báo ở CP2 ("trong compose, tên service chính là hostname") — em đã hiểu
+> nó ở mức lý thuyết, và lần này gặp nó thật trên cloud.
+>
+> **Cách sửa.** Trên Railway: service agent → **Variables** → thêm một Variable
+> Reference `REDIS_URL=${{Redis.REDIS_URL}}` để Railway tự nối sang service
+> Redis, rồi deploy lại. Sau đó:
+>
+> ```
+> GET  /ready    → 200  {"status":"ready","redis":true}
+> POST /ask × 15 → [200 ×10, 429 ×5]
 > ```
 >
-> Máy em vào được `auth.docker.io` (HTTP 200) trong khi bên trong build lại
-> không phân giải được tên miền đó. Kết luận: **đây là lỗi DNS của môi trường
-> build, không phải lỗi Dockerfile** — Docker Desktop dùng một resolver riêng
-> cho build nên nó có thể hỏng trong khi Windows vẫn phân giải bình thường.
-> Biết được điều này quan trọng vì nếu em đi sửa Dockerfile thì đã sửa vào chỗ
-> không có lỗi, và làm hỏng một file đang chạy tốt.
+> `pytest tests/test_cp5.py -v` → 9 passed, 4 skipped.
 >
-> Hướng xử lý: thử lại sau khi mạng ổn định, và ghi lại phần nào đo được, phần
-> nào không — thay vì tự điền một con số. Sau đó deploy lên Railway (build chạy
-> trên hạ tầng của Railway, không phụ thuộc DNS của máy em) và điền kết quả
-> thật vào `DEPLOYMENT.md`.
+> **Điều em rút ra.** "Online" không có nghĩa là "chạy được". Một health check
+> không kiểm tra dependency sẽ xanh kể cả khi service chưa phục vụ được request
+> nào — và đó chính là lý do CP4 tách `/health` khỏi `/ready`. Nếu bài này chỉ có
+> `/health`, em đã tưởng mọi thứ ổn và nộp một service hỏng.
+>
+> Một trục trặc khác gặp trước đó, khi build image một-stage ở máy: Docker báo
+> `failed to fetch oauth token: lookup auth.docker.io: no such host`, trong khi
+> máy vẫn vào được Docker Hub (200). Đây là lỗi DNS của môi trường build, không
+> phải lỗi Dockerfile — thử lại sau đó là được.
 
 ---
 

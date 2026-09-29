@@ -1,8 +1,8 @@
 # Thông Tin Deploy — Checkpoint 5
 
-> Trạng thái hiện tại: code đã xong và đã kiểm tra bằng stack chạy ở máy
-> (xem "Phần A" bên dưới). Ô **Public URL** sẽ được cập nhật ngay sau khi
-> deploy lên Railway.
+> Đã deploy thật lên Railway và đã kiểm tra từ ngoài Internet (kết quả ở
+> "Phần B"). Lần deploy đầu tiên service báo Online nhưng chưa dùng được vì
+> thiếu biến `REDIS_URL` — xem "Ghi Chú Về Lần Deploy Đầu Tiên" ở cuối file.
 >
 > **Chỉ ghi TÊN biến môi trường, tuyệt đối không dán giá trị API key vào đây.**
 > Repo này công khai — dán khóa vào là mất khóa.
@@ -17,11 +17,11 @@
 
 ## Service
 
-| Mục         | Nội dung                                                        |
-| ----------- | --------------------------------------------------------------- |
-| Public URL  | https://<DAN-URL-CUA-BAN>.up.railway.app                        |
-| Platform    | Railway — build từ `Dockerfile` (multi-stage), kèm Redis add-on |
-| Ngày deploy | 2026-09-29                                                      |
+| Mục         | Nội dung                                                                           |
+| ----------- | ---------------------------------------------------------------------------------- |
+| Public URL  | https://k4-l3b-day12-phanduythanh-2a202602930-cloudservi-production.up.railway.app |
+| Platform    | Railway — build từ `Dockerfile` (multi-stage), kèm Redis add-on                    |
+| Ngày deploy | 2026-09-29                                                                         |
 
 ## Biến Môi Trường Đã Set Trên Cloud
 
@@ -31,7 +31,7 @@ Ghi tên biến và **nguồn giá trị**, không ghi giá trị:
 | ----------------------- | ------ | -------------------------------------------------------------------------- |
 | `PORT`                  | ✅      | Railway tự gán, app đọc qua `${PORT:-8000}` trong Dockerfile               |
 | `AGENT_API_KEY`         | ✅      | đặt trong dashboard (hoặc `railway variables --set`), không nằm trong repo |
-| `REDIS_URL`             | ✅      | Redis add-on của Railway, tự sinh và gắn vào service agent                 |
+| `REDIS_URL`             | ✅      | Variable Reference `${{Redis.REDIS_URL}}` — nối động sang service Redis    |
 | `RATE_LIMIT_PER_MINUTE` | ✅      | 10                                                                         |
 | `MONTHLY_BUDGET_USD`    | ✅      | 10.0                                                                       |
 | `LOG_LEVEL`             | ✅      | INFO                                                                       |
@@ -122,18 +122,52 @@ Một dòng log JSON thật lấy từ container (`docker compose logs agent`):
 {"event": "ask_completed", "level": "info", "timestamp": "2026-09-29T04:33:20.435960+00:00", "user_id": "sv-roundrobin", "tokens_in": 490, "tokens_out": 46, "cost_usd": 0.0001011}
 ```
 
-### Phần B — Bản trên cloud
+### Phần B — Bản trên cloud (Railway)
+
+`https://k4-l3b-day12-phanduythanh-2a202602930-cloudservi-production.up.railway.app`
+
+Chạy `python scripts/smoke_check.py https://k4-l3b-day12-phanduythanh-2a202602930-cloudservi-production.up.railway.app`:
 
 ```
-(dán output của 5 lệnh kiểm tra sau khi deploy)
+GET  /health   (liveness)         200  {"status":"ok","service":"day12-agent","version":"1.0.0"}
+GET  /ready    (readiness)        200  {"status":"ready","redis":true}
+POST /ask      (không có API key) 401  {"detail":"invalid or missing API key"}
+POST /ask      (có API key)       200  {"answer":"Ngắn gọn: Docker là gì phụ thuộc vào ba yếu tố ...",
+      → history_length=0 cost_usd=2.265e-05 tokens={'in': 3, 'out': 37}
+POST /ask × 15 (rate limit)       [200, 200, 200, 200, 200, 200, 200, 200, 200, 200, 429, 429, 429, 429, 429]
+      → 10 request qua, 5 request bị 429
 ```
+
+`pytest tests/test_cp5.py -v` → **9 passed, 4 skipped** (4 test bỏ qua là nhánh
+`LOCAL_FALLBACK`, đúng như mong đợi khi đã deploy thật).
+
+## Ghi Chú Về Lần Deploy Đầu Tiên
+
+Lần deploy đầu tiên trông thành công — card service báo **Online** — nhưng thực
+ra chưa dùng được:
+
+```
+GET  /health  → 200  ← qua, vì /health cố tình KHÔNG kiểm tra dependency
+GET  /ready   → 503  {"status":"not ready","redis":false}
+POST /ask     → 401 (không key)  /  500 (có key)
+```
+
+Nguyên nhân: biến `REDIS_URL` chưa được gắn vào service agent, nên app rơi về
+mặc định `redis://localhost:6379/0` — trong container, `localhost` là chính
+container đó, không phải service Redis. Cách sửa: thêm Variable Reference
+`REDIS_URL=${{Redis.REDIS_URL}}` trong tab Variables của service agent.
 
 ## Ảnh Chụp Màn Hình
 
 Đặt ảnh trong thư mục `screenshots/`:
 
-- `screenshots/dashboard.png` — trang quản lý service trên platform
-- `screenshots/health.png` — kết quả gọi `/health` từ trình duyệt hoặc curl
+| File                           | Nội dung                                                                                                         |
+| ------------------------------ | ---------------------------------------------------------------------------------------------------------------- |
+| `screenshots/dashboard.png`    | Canvas Railway: card service agent **Online** + card **Redis** Online                                            |
+| `screenshots/health.png`       | Kết quả gọi `/health` trên trình duyệt (`{"status":"ok","service":"day12-agent","version":"1.0.0"}`)             |
+| `screenshots/build-logs.png`   | Tab **Build Logs**: `pip install ... cached`, `COPY requirements.txt ... cached` — chứng minh thứ tự layer ở CP2 |
+| `screenshots/deploy-logs.png`  | Tab **Deploy Logs**: log JSON một dòng của CP1, kèm các mã 200/401                                               |
+| `screenshots/network-logs.png` | Tab **Network Logs**: bảng HTTP có `200` cho `/health`, `/ready` và `429` khi vượt rate limit                    |
 
 ---
 

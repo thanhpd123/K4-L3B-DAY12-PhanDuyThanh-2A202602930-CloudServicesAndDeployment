@@ -13,20 +13,19 @@ Bài lab bắt đầu từ một agent FastAPI chạy được ở `localhost:80
 đưa nó tới trạng thái "chạy được thật": có địa chỉ công khai, biết ai đang gọi,
 không để người lạ đốt hết tiền, và không rớt request mỗi lần deploy bản mới.
 
-Kết quả hiện tại: **CP1–CP4 hoàn thành và đã kiểm tra xanh**, code đã chạy thật
-trong Docker với 3 instance song song. CP5 (địa chỉ công khai trên cloud) là
-phần duy nhất còn phụ thuộc vào tài khoản cloud, sẽ được điền URL sau khi deploy.
+Kết quả hiện tại: **CP1–CP5 hoàn thành**. Service đã chạy thật trên Internet, đã
+được kiểm tra tự động, và `python grade.py` cho **100/100** phần bắt buộc.
 
-| Checkpoint | Nội dung                                             | Trạng thái                                     |
-| ---------- | ---------------------------------------------------- | ---------------------------------------------- |
-| CP1        | 12-Factor config, health check, log JSON             | ✅ 13/13 test xanh                              |
-| CP2        | Dockerfile multi-stage, bảo mật image, compose stack | ✅ 16/16 test, image thật: 1.19 GB → **184 MB** |
-| CP3        | API key, rate limit, cost guard                      | ✅ 27/27 test xanh                              |
-| CP4        | Stateless, readiness, graceful shutdown              | ✅ 22/22 test xanh                              |
-| CP5        | Deploy lên cloud                                     | ⏳ Chờ điền Public URL                          |
+| Checkpoint | Nội dung                                             | Trạng thái                                      |
+| ---------- | ---------------------------------------------------- | ----------------------------------------------- |
+| CP1        | 12-Factor config, health check, log JSON             | ✅ 13/13 test                                    |
+| CP2        | Dockerfile multi-stage, bảo mật image, compose stack | ✅ 14/14 test, image thật: 1.19 GB → **184 MB**  |
+| CP3        | API key, rate limit, cost guard                      | ✅ 22/22 test                                    |
+| CP4        | Stateless, readiness, graceful shutdown              | ✅ 19/19 test                                    |
+| CP5        | Deploy lên cloud                                     | ✅ 9/9 test (4 bỏ qua) — đã có địa chỉ công khai |
 
-Tổng thể bộ test: `55 failed` lúc đầu → **`68 passed`, chỉ còn CP5 và phần bonus
-chưa đạt** (đúng như thiết kế: hai phần đó cần tài khoản cloud và GitHub Actions).
+Tổng thể bộ test: `55 failed, 7 passed` lúc đầu → **100/100** phần bắt buộc.
+Phần bonus CI/CD vẫn để mở (xem mục 6).
 
 ---
 
@@ -193,8 +192,15 @@ healthcheck trỏ vào `/health`. Các biến môi trường (`AGENT_API_KEY`, `
 dashboard, **không** nằm trong repo. Biến `PORT` do Railway tự gán — đây là lý do
 Dockerfile phải đọc `${PORT:-8000}` thay vì cứng 8000.
 
-Trong lúc chờ tài khoản cloud, em đã kiểm tra toàn bộ luồng bằng stack chạy ở
-máy với 3 instance — kết quả trình bày ở phần dưới.
+Lần deploy đầu tiên trông thì thành công: card service trên Railway báo
+**Online**. Nhưng "Online" ở đây chỉ có nghĩa là health check của platform qua
+được — mà `/health` thì cố tình **không** kiểm tra dependency, đúng như thiết kế
+ở CP4. Thực tế lúc đó `/ready` trả **503 `{"redis":false}`** và `/ask` trả
+**500**: service sống nhưng chưa dùng được. Em kể chi tiết quá trình tìm ra và
+sửa ở mục 5 (Lỗi 4).
+
+Sau khi thêm `REDIS_URL=${{Redis.REDIS_URL}}` bằng Variable Reference của
+Railway, cả 5 phép kiểm tra đều xanh và **9/9 test CP5 pass**.
 
 ---
 
@@ -266,6 +272,25 @@ Từ dòng log này trả lời được những câu mà `print("đã trả l�
 giờ trả lời nổi: user nào đang tiêu nhiều tiền nhất, chi phí trung bình mỗi
 request là bao nhiêu, tỷ lệ lỗi trong 5 phút qua là bao nhiêu.
 
+### 4.5 Bản deploy thật trên Railway
+
+`https://k4-l3b-day12-phanduythanh-2a202602930-cloudservi-production.up.railway.app`
+
+```
+GET  /health   (liveness)         200  {"status":"ok","service":"day12-agent","version":"1.0.0"}
+GET  /ready    (readiness)        200  {"status":"ready","redis":true}
+POST /ask      (không có API key) 401  {"detail":"invalid or missing API key"}
+POST /ask      (có API key)       200  {"answer":"...","history_length":0,...}
+POST /ask × 15 (rate limit)       [200 ×10, 429 ×5]
+```
+
+`pytest tests/test_cp5.py -v` → **9 passed, 4 skipped** (4 test bị bỏ qua là nhánh
+`LOCAL_FALLBACK`, đúng như mong đợi khi đã deploy thật).
+
+Điểm đáng chú ý: **cùng một bộ test, cùng một image** — khác nhau chỉ ở biến môi
+trường truyền vào. Đây là 12-Factor đang trả cổ tức: từ lúc code xong tới lúc
+chạy thật trên Internet, không phải sửa một dòng code nào.
+
 ---
 
 ## 5. Những chỗ em đã sai và cách tìm ra
@@ -284,31 +309,66 @@ trong script bằng `sys.stdout.reconfigure(encoding="utf-8")`.
 
 **Lỗi 3 — build image một-stage không lấy được base image.** Docker báo
 `failed to fetch oauth token: lookup auth.docker.io: no such host`, trong khi
-máy vẫn vào được Docker Hub. Đây là lỗi DNS bên trong build, không phải lỗi
-Dockerfile. Cách xử lý: thử lại, và nếu vẫn không được thì ghi rõ trong báo cáo
-số nào đo được, số nào không — chứ không tự bịa số.
+máy vẫn vào được Docker Hub (`curl https://auth.docker.io/token` trả 200). Đây
+là lỗi DNS bên trong môi trường build, không phải lỗi Dockerfile — Docker
+Desktop dùng resolver riêng cho build. Lần thử lại sau đó kéo được base image về
+bình thường (mất 433 giây) và cho ra con số 1.19 GB.
 
-Điều em rút ra: phần lớn thời gian không mất ở chỗ viết code, mà ở chỗ phân biệt
-"lỗi môi trường" với "lỗi code". `docker context ls` và việc đọc kỹ thông báo lỗi
-tiết kiệm được khá nhiều thời gian.
+**Lỗi 4 — deploy xong nhưng service không dùng được (thiếu `REDIS_URL`).**
+Đây là lỗi đáng nhớ nhất. Sau khi `railway up`, card service báo **Online** nên
+em tưởng đã xong. Kiểm tra thật thì:
+
+```
+GET  /health  → 200  {"status":"ok",...}          ← qua
+GET  /ready   → 503  {"status":"not ready","redis":false}
+POST /ask     → 401 (không key)  /  500 (có key)
+```
+
+Cách em tìm ra nguyên nhân là đọc hai tín hiệu rời nhau. Thứ nhất, `/ask` không
+có key trả **401 chứ không phải 500** — chứng tỏ `AGENT_API_KEY` đã set đúng,
+vì lớp xác thực phải chạy được trước khi trả 401. Vậy lỗi không nằm ở khâu cấu
+hình chung. Thứ hai, `/ready` nói rõ `"redis": false` — nghĩa là `store.ping()`
+thất bại. Ghép lại: app không nối được Redis.
+
+Nguyên nhân gốc: biến `REDIS_URL` chưa được gắn vào service agent, nên `Settings`
+rơi về giá trị mặc định `redis://localhost:6379/0`. Trong container, `localhost`
+là **chính container đó**, không phải service Redis — đúng cái bẫy mà
+`docker-compose.yml` đã cảnh báo ở CP2, và lần này em gặp nó thật trên cloud.
+
+Cách sửa: trên Railway, mở service agent → **Variables** → thêm một Variable
+Reference `REDIS_URL=${{Redis.REDIS_URL}}` để Railway nối động sang service
+Redis, rồi deploy lại. Sau đó `/ready` trả 200, rate limit chạy đúng
+(`[200 ×10, 429 ×5]`), và 9/9 test CP5 pass.
+
+Điều em rút ra: **"Online" không có nghĩa là "chạy được"**. Một health check
+không kiểm tra dependency sẽ xanh kể cả khi service chưa phục vụ được request
+nào — và đó chính là lý do CP4 tách `/health` khỏi `/ready`. Nếu bài này chỉ có
+`/health`, em đã tưởng mọi thứ ổn và nộp một service hỏng.
+
+Điều em rút ra chung: phần lớn thời gian không mất ở chỗ viết code, mà ở chỗ
+phân biệt "lỗi môi trường" với "lỗi code", và ở chỗ đọc đúng tín hiệu mà hệ
+thống đưa ra (`docker context ls`, mã 401 so với 500, `"redis": false`).
 
 ---
 
 ## 6. Việc còn lại
 
-1. **Deploy lên Railway** và điền Public URL vào `DEPLOYMENT.md`, rồi chạy
-   `pytest tests/test_cp5.py -v`.
-2. **Chụp 2 ảnh** vào `screenshots/`: trang dashboard và kết quả gọi `/health`.
-3. **(Bonus, không bắt buộc)** tự viết `.github/workflows/ci.yml` cho CI/CD —
+Phần bắt buộc đã xong. Còn lại:
+
+1. **Chụp 2 ảnh** vào `screenshots/`: trang dashboard Railway và kết quả gọi
+   `/health` trên trình duyệt.
+2. **(Bonus, không bắt buộc, +10)** viết `.github/workflows/ci.yml` cho CI/CD —
    mỗi lần push là chạy test, build image, chỉ deploy khi mọi thứ xanh. Phần này
    cần đẩy repo lên GitHub và cất token deploy trong GitHub Secrets.
 
-Cách tự kiểm tra toàn bộ phần bắt buộc:
+Cách tự kiểm tra lại toàn bộ:
 
 ```powershell
-pytest tests/ -q -m "not docker"     # CP1–CP4
-python grade.py                      # xem điểm tổng
-python scripts/smoke_check.py        # kiểm tra endpoint bản chạy ở máy
+python grade.py                        # điểm tổng
+pytest tests/ -q -m "not docker"       # CP1–CP4
+pytest tests/test_cp5.py -v            # CP5 (cần mạng)
+python scripts/smoke_check.py          # bản chạy ở máy
+python scripts/smoke_check.py https://k4-l3b-day12-phanduythanh-2a202602930-cloudservi-production.up.railway.app
 ```
 
 ---
